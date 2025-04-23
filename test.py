@@ -2,6 +2,8 @@ from flask import Flask, request
 import telebot
 import json
 import random
+import threading
+import time
 
 TOKEN = '7947429084:AAECl4VTgRdgv53IAixvZ5qgDMvABI8_d0o'
 ADMIN_ID = 6862331593  # Telegram ID-и админи аслӣ
@@ -14,13 +16,16 @@ try:
     with open("data.json", "r") as f:
         db = json.load(f)
 except:
-    db = {"movies": {}, "channels": [], "admins": [ADMIN_ID], "collections": {}}
+    db = {"movies": {}, "channels": [], "admins": [ADMIN_ID], "collections": {}, "delete_time": 30}
 
 if "admins" not in db:
     db["admins"] = [ADMIN_ID]
 
 if "collections" not in db:
     db["collections"] = {}
+
+if "delete_time" not in db:
+    db["delete_time"] = 30  # Вақти стандартӣ барои нест кардани филмҳо (30 сония)
 
 def save_db():
     with open("data.json", "w") as f:
@@ -128,6 +133,7 @@ def panel(msg):
     markup.add("❌ Нест кардани Филм", "❌ Нест кардани Канал")
     markup.add("📚 Маҷмӯаи филмҳо")
     markup.add("👨‍💼 Идоракунии админҳо")
+    markup.add("⏱ Танзимоти вақт")
     markup.add("🔙 Бозгашт")
     bot.send_message(msg.chat.id, "Панели админ:", reply_markup=markup)
 
@@ -211,6 +217,8 @@ def add_movie_to_collection(msg):
             collection_temp[msg.chat.id]["movies"].append(movie_data)
             movie_count = len(collection_temp[msg.chat.id]["movies"])
             bot.send_message(msg.chat.id, f"Филми {movie_count} илова шуд. Филми навбатиро равон кунед ё [анҷом] пахш кунед:")
+    else:
+        bot.send_message(msg.chat.id, "Лутфан филм равон кунед ё [анҷом] пахш кунед.")
 
 @bot.message_handler(func=lambda msg: user_states.get(msg.chat.id) == "waiting_for_admin_id")
 def process_add_admin(msg):
@@ -348,21 +356,58 @@ def process_delete_channel(msg):
             bot.send_message(msg.chat.id, "Лутфан рақам нависед.")
         user_states.pop(msg.chat.id)
 
+def schedule_delete_message(chat_id, message_id, delete_time):
+    """Функсия барои нест кардани автоматии паёмҳо дар вақти муайян"""
+    def delete_message():
+        try:
+            time.sleep(delete_time)
+            bot.delete_message(chat_id, message_id)
+        except Exception as e:
+            print(f"Хатогӣ ҳангоми нест кардани паём: {e}")
+    
+    thread = threading.Thread(target=delete_message)
+    thread.daemon = True
+    thread.start()
+
 @bot.message_handler(func=lambda msg: user_states.get(msg.chat.id) == "waiting_for_movie_id")
 def process_search_movie(msg):
     movie_id = msg.text
     if is_subscribed(msg.chat.id):
+        delete_time = db.get("delete_time", 30)  # Вақти нест кардан (стандартӣ 30 сония)
+        
         # Санҷиш барои маҷмӯа
         if movie_id in db["collections"]:
+            warning_msg = bot.send_message(msg.chat.id, f"⚠️ Диққат! Филмҳо баъд аз {delete_time} сония нест мешаванд. Агар лозим бошад, нусхаи онҳоро захира кунед.")
+            
+            sent_messages = []
             for movie in db["collections"][movie_id]["movies"]:
-                bot.send_video(msg.chat.id, movie["file_id"])
-            bot.send_message(msg.chat.id, f"Маҷмӯаи филмҳо бо ID {movie_id} равон карда шуд.")
+                sent = bot.send_video(msg.chat.id, movie["file_id"])
+                sent_messages.append(sent.message_id)
+            
+            info_msg = bot.send_message(msg.chat.id, f"Маҷмӯаи филмҳо бо ID {movie_id} равон карда шуд.")
+            sent_messages.append(info_msg.message_id)
+            sent_messages.append(warning_msg.message_id)
+            
+            # Банақшагирии нест кардани ҳамаи паёмҳо
+            for message_id in sent_messages:
+                schedule_delete_message(msg.chat.id, message_id, delete_time)
+                
         # Санҷиш барои як филм
         elif movie_id in db["movies"]:
+            warning_msg = bot.send_message(msg.chat.id, f"⚠️ Диққат! Филм баъд аз {delete_time} сония нест мешавад. Агар лозим бошад, нусхаи онро захира кунед.")
+            
             data = db["movies"][movie_id]
-            bot.send_video(msg.chat.id, data["file_id"])
+            video_msg = bot.send_video(msg.chat.id, data["file_id"])
+            
+            sent_messages = [video_msg.message_id, warning_msg.message_id]
+            
             if data["info"]:
-                bot.send_message(msg.chat.id, data["info"])
+                info_msg = bot.send_message(msg.chat.id, data["info"])
+                sent_messages.append(info_msg.message_id)
+            
+            # Банақшагирии нест кардани ҳамаи паёмҳо
+            for message_id in sent_messages:
+                schedule_delete_message(msg.chat.id, message_id, delete_time)
         else:
             bot.send_message(msg.chat.id, "Филм ё маҷмӯа бо чунин ID ёфт нашуд.")
     else:
@@ -373,25 +418,70 @@ def process_search_movie(msg):
 def send_movie(msg):
     movie_id = msg.text
     if is_subscribed(msg.chat.id):
+        delete_time = db.get("delete_time", 30)  # Вақти нест кардан (стандартӣ 30 сония)
+        
         # Санҷиш барои маҷмӯа
         if movie_id in db["collections"]:
+            warning_msg = bot.send_message(msg.chat.id, f"⚠️ Диққат! Филмҳо баъд аз {delete_time} сония нест мешаванд. Агар лозим бошад, нусхаи онҳоро захира кунед.")
+            
+            sent_messages = []
             for movie in db["collections"][movie_id]["movies"]:
-                bot.send_video(msg.chat.id, movie["file_id"])
-            bot.send_message(msg.chat.id, f"Маҷмӯаи филмҳо бо ID {movie_id} равон карда шуд.")
+                sent = bot.send_video(msg.chat.id, movie["file_id"])
+                sent_messages.append(sent.message_id)
+            
+            info_msg = bot.send_message(msg.chat.id, f"Маҷмӯаи филмҳо бо ID {movie_id} равон карда шуд.")
+            sent_messages.append(info_msg.message_id)
+            sent_messages.append(warning_msg.message_id)
+            
+            # Банақшагирии нест кардани ҳамаи паёмҳо
+            for message_id in sent_messages:
+                schedule_delete_message(msg.chat.id, message_id, delete_time)
+                
         # Санҷиш барои як филм
         elif movie_id in db["movies"]:
+            warning_msg = bot.send_message(msg.chat.id, f"⚠️ Диққат! Филм баъд аз {delete_time} сония нест мешавад. Агар лозим бошад, нусхаи онро захира кунед.")
+            
             data = db["movies"][movie_id]
-            bot.send_video(msg.chat.id, data["file_id"])
+            video_msg = bot.send_video(msg.chat.id, data["file_id"])
+            
+            sent_messages = [video_msg.message_id, warning_msg.message_id]
+            
             if data["info"]:
-                bot.send_message(msg.chat.id, data["info"])
+                info_msg = bot.send_message(msg.chat.id, data["info"])
+                sent_messages.append(info_msg.message_id)
+            
+            # Банақшагирии нест кардани ҳамаи паёмҳо
+            for message_id in sent_messages:
+                schedule_delete_message(msg.chat.id, message_id, delete_time)
         else:
             bot.send_message(msg.chat.id, "Филм ё маҷмӯа бо чунин ID ёфт нашуд.")
     else:
-        start(msg)
+       start(msg)
+
+# Танзимоти вақт
+@bot.message_handler(func=lambda msg: msg.text == "⏱ Танзимоти вақт" and is_admin(msg.from_user.id))
+def set_delete_time(msg):
+    user_states[msg.chat.id] = "waiting_for_delete_time"
+    bot.send_message(msg.chat.id, "Лутфан вақти нест кардани филмҳоро бо сония ворид кунед (аз 5 то 120 сония):")
+
+@bot.message_handler(func=lambda msg: user_states.get(msg.chat.id) == "waiting_for_delete_time")
+def process_delete_time(msg):
+    if is_admin(msg.from_user.id):
+        try:
+            delete_time = int(msg.text)
+            if 5 <= delete_time <= 120:
+                db["delete_time"] = delete_time
+                save_db()
+                bot.send_message(msg.chat.id, f"Вақти нест кардани автоматии филмҳо ба {delete_time} сония танзим шуд.")
+            else:
+                bot.send_message(msg.chat.id, "Вақт бояд аз 5 то 120 сония бошад. Лутфан дубора кӯшиш кунед.")
+        except ValueError:
+            bot.send_message(msg.chat.id, "Лутфан танҳо рақам ворид кунед.")
+        user_states.pop(msg.chat.id)
 
 # Webhook-ро насб мекунем
 bot.remove_webhook()
-bot.set_webhook(url=f"https://films-bot-9fxf.onrender.com/{TOKEN}")
+bot.set_webhook(url=f"https://films-bot-9fxf.onrender.com/7947429084:AAECl4VTgRdgv53IAixvZ5qgDMvABI8_d0o")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=11000)
