@@ -588,4 +588,4 @@ if __name__ == "__main__":
     bot.set_webhook(url=f"https://films-bot-9fxf.onrender.com/7947429084:AAECl4VTgRdgv53IAixvZ5qgDMvABI8_d0o")
     
     # Оғози сервер Flask
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 11000)))
+    app.run(host="0.0.0.0", port=12000)
